@@ -1,10 +1,6 @@
 name: Publish Bank of Taiwan USD quote
 on:
   workflow_dispatch:
-  push:
-    paths: ['.github/workflows/bot-quote.yml']
-  schedule:
-    - cron: '7,22,37,52 * * * *'
 permissions:
   contents: write
 concurrency:
