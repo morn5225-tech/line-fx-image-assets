@@ -13,17 +13,30 @@ concurrency:
 jobs:
   quote:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Install standard browser renderer
+        run: |
+          python3 -m pip install playwright
+          python3 -m playwright install --with-deps chromium
       - name: Fetch official public quote without credentials
         run: |
           python3 - <<'PY'
-          import datetime, html, json, pathlib, re, urllib.request
+          import datetime, html, json, pathlib, re
+          from playwright.sync_api import sync_playwright
           source = 'https://rate.bot.com.tw/xrt?Lang=zh-TW'
-          req = urllib.request.Request(source, headers={'User-Agent': 'BankQuoteMonitor/1.0'})
-          with urllib.request.urlopen(req, timeout=30) as response:
-              text = response.read().decode('utf-8')
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto(source, wait_until='domcontentloaded', timeout=60000)
+              try:
+                  page.locator('td[data-table="本行即期賣出"]').first.wait_for(timeout=45000)
+              except Exception:
+                  print('Official page did not expose the public quote table. Title:', page.title())
+                  raise
+              text = page.content()
+              browser.close()
           rows = [r for r in re.findall(r'<tr\b[^>]*>[\s\S]*?</tr>', text, re.I) if re.search(r'\bUSD\b', r)]
           if len(rows) != 1:
               raise RuntimeError('Official USD row missing; not publishing stale or substitute data')
