@@ -1,0 +1,55 @@
+name: Publish Bank of Taiwan USD quote
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/bot-quote.yml']
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+permissions:
+  contents: write
+concurrency:
+  group: bank-of-taiwan-quote
+  cancel-in-progress: false
+jobs:
+  quote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch official public quote without credentials
+        run: |
+          python3 - <<'PY'
+          import datetime, html, json, pathlib, re, urllib.request
+          source = 'https://rate.bot.com.tw/xrt?Lang=zh-TW'
+          req = urllib.request.Request(source, headers={'User-Agent': 'BankQuoteMonitor/1.0'})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              text = response.read().decode('utf-8')
+          rows = [r for r in re.findall(r'<tr\b[^>]*>[\s\S]*?</tr>', text, re.I) if re.search(r'\bUSD\b', r)]
+          if len(rows) != 1:
+              raise RuntimeError('Official USD row missing; not publishing stale or substitute data')
+          cells = re.findall(r'<td\b[^>]*>[\s\S]*?</td>', rows[0], re.I)
+          prices = [html.unescape(re.sub('<[^>]*>', '', c)).strip() for c in cells if re.search(r'data-table=["\x27](?:本行即期賣出|Spot Selling)["\x27]', c, re.I)]
+          if not prices or len(set(prices)) != 1:
+              raise RuntimeError('USD spot selling field missing or inconsistent')
+          rate = float(prices[0])
+          if not 10 <= rate <= 100:
+              raise RuntimeError('Invalid USD rate')
+          dates = re.findall(r'20\d{2}/\d{2}/\d{2}\s+\d{2}:\d{2}(?::\d{2})?', text)
+          if not dates:
+              raise RuntimeError('Official published timestamp missing')
+          tz = datetime.timezone(datetime.timedelta(hours=8))
+          quoted = max(datetime.datetime.fromisoformat(s.replace('/', '-').replace(' ', 'T')).replace(tzinfo=tz) for s in dates)
+          now = datetime.datetime.now(datetime.timezone.utc)
+          if not -300 <= (now-quoted).total_seconds() <= 7*24*3600:
+              raise RuntimeError('Invalid official timestamp')
+          data = {'schemaVersion': 1, 'source': source, 'bank': 'BOT', 'currency': 'USD', 'rateType': 'spot_sell', 'rate': rate, 'quotedAt': quoted.isoformat(), 'checkedAt': now.isoformat()}
+          pathlib.Path('bot-usd-quote.json').write_text(json.dumps(data, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
+          print(json.dumps(data, ensure_ascii=False))
+          PY
+      - name: Publish verified public bank quote
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bot-usd-quote.json
+          git diff --cached --quiet || git commit -m 'Update official Bank of Taiwan USD quote'
+          git push
